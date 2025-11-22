@@ -5,83 +5,189 @@ A Discord bot for managing your Minecraft server remotely with full internationa
 ## Features
 
 - **Start/Stop/Kill** - Control your Minecraft server remotely
-- **Status monitoring** - Real-time server status updates
+- **Status monitoring** - Real-time server status updates via Discord presence
 - **Logging** - Timestamped logs with server output capture
+- **Background operation** - Run as Windows service or scheduled task
 - **Configurable** - All settings in one JSON file
+- **Multi-language** - English and Polish translations included
 
 ## Requirements
 
-- Python 3.10+
-- Discord.py 2.0+
+- Python 3.10 or higher
+- Discord.py 2.0 or higher
 - A Discord bot token
 - Windows (for .bat server scripts)
 
 ## Installation
 
-1. **Clone or download** this repository
+### 1. Install Dependencies
+```bash
+pip install -r requirements.txt
+```
 
-2. **Install dependencies:**
-   ```bash
-   pip install discord.py python-dotenv
-   ```
+### 2. Create Configuration
+```bash
+# Copy example config
+copy config.example.json config.json
 
-3. **Create configuration file:**
-   ```bash
-   cp config.example.json config.json
-   ```
+# Create .env file for token
+echo DISCORD_TOKEN=your_token_here > .env
+```
 
-4. **Edit `config.json`** and fill in your settings:
-   - `discord_token` - Your Discord bot token (or use `.env` file)
-   - `server.directory` - Path to your Minecraft server folder
-   - `server.start_script` - Name of your startup script (e.g., `start-server.bat`)
-   - `language` - Choose `"en"` or `"pl"`
+### 3. Edit Configuration
 
-5. **Create Discord bot:**
-   - Go to [Discord Developer Portal](https://discord.com/developers/applications)
-   - Create New Application
-   - Go to Bot section → Add Bot
-   - Copy token and paste into `config.json` OR create `.env` file:
-     ```
-     DISCORD_TOKEN=your_token_here
-     ```
-   - Enable **Message Content Intent** in Bot settings
-   - Go to OAuth2 → URL Generator:
-     - Select scopes: `bot`, `applications.commands`
-     - Select permissions: `Send Messages`, `Use Slash Commands`
-     - Copy generated URL and invite bot to your server
+Open `config.json` and configure:
+- `server.directory` - Path to your Minecraft server folder (use `\\` for Windows paths)
+- `server.start_script` - Name of your startup script (e.g., `start-server.bat`)
+- `language` - Choose `"en"` or `"pl"`
 
-6. **Run the bot:**
-   ```bash
-   python bot.py
-   ```
+### 4. Create Discord Bot
+
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
+2. Create New Application
+3. Navigate to Bot section and click Add Bot
+4. Copy the token and paste it into your `.env` file
+5. Enable **Message Content Intent** in Bot settings
+6. Go to OAuth2 URL Generator:
+   - Select scopes: `bot`, `applications.commands`
+   - Select permissions: `Send Messages`, `Use Slash Commands`
+   - Copy the generated URL and invite the bot to your server
+
+### 5. Run the Bot
+
+**For testing:**
+```bash
+python bot.py
+```
+
+**For production (run in background):**
+
+See the next section for setting up automatic startup.
+
+## Running as Background Service
+
+You have two options for running the bot automatically on Windows startup.
+
+### Option A: Task Scheduler (Recommended)
+
+Run the included setup script as Administrator:
+
+```bash
+python setup_autostart.py
+```
+
+This will configure Windows Task Scheduler to start the bot on system startup.
+
+To manage the task:
+```bash
+# Start the bot manually
+schtasks /run /tn MinecraftBot
+
+# Stop the bot
+taskkill /f /im pythonw.exe /fi "WINDOWTITLE eq bot.py*"
+
+# Remove autostart
+schtasks /delete /tn MinecraftBot /f
+```
+
+### Option B: NSSM (Advanced)
+
+For more control, you can use NSSM (Non-Sucking Service Manager):
+
+1. Download NSSM from the official site: https://nssm.cc/download
+2. Extract `nssm.exe` from the appropriate folder (`win64` for 64-bit systems)
+3. Open Command Prompt as Administrator
+4. Run:
+
+```bash
+nssm.exe install MinecraftBot
+```
+
+5. In the NSSM GUI:
+   - Application Path: Path to `python.exe` (e.g., `C:\Python311\python.exe`)
+   - Startup directory: Path to bot folder
+   - Arguments: `bot.py`
+
+6. Start the service:
+```bash
+nssm.exe start MinecraftBot
+```
+
+**Managing the service:**
+```bash
+# Start the service
+nssm.exe start MinecraftBot
+
+# Stop the service
+nssm.exe stop MinecraftBot
+
+# Restart the service
+nssm.exe restart MinecraftBot
+
+# Check service status
+nssm.exe status MinecraftBot
+
+# Remove the service
+nssm.exe remove MinecraftBot confirm
+```
+
+You can also manage the service through Windows Services GUI (`services.msc`).
+
+NSSM provides additional features like automatic restart on crash and detailed logging.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `/start` | Start the Minecraft server |
-| `/stop` | Stop the server gracefully (sends "stop" command) |
+| `/stop` | Stop the server gracefully |
 | `/kill` | Force kill the server process |
 | `/status` | Show current server status and recent logs |
+| `/logs` | Show last 30 lines from server.log |
 | `/config` | Display current bot configuration |
 
-## Configuration Options
+## Configuration
 
 ### Server Settings
+```json
+{
+  "server": {
+    "directory": "C:\\path\\to\\minecraft\\server",
+    "start_script": "start-server.bat",
+    "stop_timeout": 60
+  }
+}
+```
+
 - `directory` - Full path to Minecraft server folder
 - `start_script` - Startup script filename
 - `stop_timeout` - Seconds to wait for graceful shutdown (default: 60)
 
 ### Logging Settings
+```json
+{
+  "logging": {
+    "bot_log_file": "bot.log",
+    "status_log_lines": 15
+  }
+}
+```
+
 - `bot_log_file` - Log file path (default: "bot.log")
 - `status_log_lines` - Number of log lines shown in `/status` (default: 15)
 
 ### Language
-Set `"language": "pl"` for Polish or `"language": "en"` for English
+```json
+{
+  "language": "en"
+}
+```
+
+Set to `"pl"` for Polish or `"en"` for English.
 
 ## Adding New Languages
 
-Edit `config.json` and add a new translation section under `translations`:
+Edit `config.json` and add a new translation section:
 
 ```json
 "translations": {
@@ -95,40 +201,39 @@ Edit `config.json` and add a new translation section under `translations`:
 }
 ```
 
-Then set `"language": "de"` to use it.
+Then set `"language": "de"` in your configuration.
 
-## Troubleshooting
+## Updating the bot
 
-### Bot doesn't respond to commands
-- Check if bot has proper permissions in Discord server
-- Verify **Message Content Intent** is enabled in Discord Developer Portal
-- Run `/config` command to verify settings are loaded correctly
+After updating the code (e.g., via git pull), restart the bot:
 
-### "config.json not found" error
-- Copy `config.example.json` to `config.json`
-- Edit the file with your settings
+**If using Task Scheduler:**
+```bash
+taskkill /f /im pythonw.exe /fi "WINDOWTITLE eq bot.py*"
+schtasks /run /tn MinecraftBot
+```
 
-### Server won't start
-- Verify `server.directory` path is correct (use double backslashes `\\` on Windows)
-- Check if `start_script` exists in the server directory
-- Review `bot.log` for detailed error messages
+**If using NSSM:**
+```bash
+nssm.exe restart MinecraftBot
+```
 
-### Status shows "Error" after stop
-- Normal if server crashed or was killed
-- Check last exit code in `/status` command
-- Review server logs for crash details
+## Log Files
+
+- `bot.log` - Bot activity and server output
+- `server/server.log` - Minecraft server log
+
+## Security notes
+
+- Never commit your `.env` file or actual `config.json` to version control
+- Keep your Discord token private
+- The bot requires access to start/stop the server process
+- Ensure only trusted users have access to bot commands on Discord
 
 ## License
 
-MIT License - Feel free to modify and distribute
-
-## Contributing
-
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request
+MIT License - See [LICENSE](LICENSE) file for details.
 
 ---
 
-**Polish README available as:** [README-PL.md](README-PL.md)
+**Polish README:** [README-PL.md](README-PL.md)
