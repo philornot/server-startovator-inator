@@ -1,0 +1,608 @@
+import asyncio
+import json
+import os
+import subprocess
+import threading
+import traceback
+from datetime import datetime
+from typing import Optional
+
+import discord
+from discord.ext import commands, tasks
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ===============================
+#   Configuration
+# ===============================
+CONFIG_FILE = "config.json"
+
+
+def load_config():
+    """Load configuration from config.json"""
+    if not os.path.exists(CONFIG_FILE):
+        print(f"[ERROR] Configuration file '{CONFIG_FILE}' not found!")
+        print("Please create config.json based on config.example.json")
+        exit(1)
+
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] Invalid JSON in config.json: {e}")
+        exit(1)
+
+
+config = load_config()
+
+# Load settings
+TOKEN = os.getenv("DISCORD_TOKEN") or config.get("discord_token")
+if not TOKEN:
+    print("[ERROR] Discord token not found! Set DISCORD_TOKEN in .env or config.json")
+    exit(1)
+
+SERVER_DIR = config["server"]["directory"]
+START_BAT = os.path.join(SERVER_DIR, config["server"]["start_script"])
+LOG_FILE = config["logging"]["bot_log_file"]
+
+# Verify paths
+if not os.path.exists(SERVER_DIR):
+    print(f"[ERROR] Server directory not found: {SERVER_DIR}")
+    exit(1)
+
+if not os.path.exists(START_BAT):
+    print(f"[ERROR] Start script not found: {START_BAT}")
+    exit(1)
+
+# Load language
+LANG = config.get("language", "en")
+TRANSLATIONS = config["translations"][LANG]
+
+# Global state
+server_process: Optional[subprocess.Popen] = None
+server_in_error = False
+last_exit_code = None
+last_status = None  # Changed from "Offline" to None to force initial update
+
+
+# ===============================
+#   Logging
+# ===============================
+def get_timestamp() -> str:
+    """Get formatted timestamp"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def log(msg: str, level: str = "INFO"):
+    """Write log message with timestamp"""
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{get_timestamp()}] [{level}] {msg}\n")
+        print(f"[{get_timestamp()}] [{level}] {msg}")
+    except Exception as e:
+        print(f"[{get_timestamp()}] [ERROR] Failed to write log: {e}")
+
+
+def log_exception(msg: str):
+    """Write error log with timestamp and traceback"""
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{get_timestamp()}] [ERROR] {msg}\n")
+            f.write(traceback.format_exc() + "\n")
+        print(f"[{get_timestamp()}] [ERROR] {msg}")
+        print(traceback.format_exc())
+    except Exception as e:
+        print(f"[{get_timestamp()}] [ERROR] Failed to write error log: {e}")
+
+
+def read_last_log_lines(n: int = 20) -> str:
+    """Read last N lines from log file"""
+    if not os.path.exists(LOG_FILE):
+        return TRANSLATIONS["no_logs"]
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            return "".join(lines[-n:]) if lines else TRANSLATIONS["no_logs"]
+    except Exception as e:
+        log_exception(f"Failed to read log file: {e}")
+        return f"(error reading logs: {e})"
+
+
+# ===============================
+#   Process management utilities
+# ===============================
+def kill_process_tree(pid: int):
+    """Kill process and all its children (Windows-specific)"""
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        log(f"Killed process tree for PID {pid}", "INFO")
+    except subprocess.TimeoutExpired:
+        log(f"Taskkill timeout for PID {pid}", "WARN")
+    except Exception as e:
+        log_exception(f"Failed to kill process tree: {e}")
+
+
+# ===============================
+#   Process monitoring
+# ===============================
+def monitor_process():
+    """Monitor server process and log when it exits"""
+    global server_process, server_in_error, last_exit_code
+
+    if server_process is None:
+        return
+
+    try:
+        # Read output line by line
+        for line in server_process.stdout:
+            stripped = line.strip()
+            if stripped:  # Only log non-empty lines
+                log(f"{stripped}", "SERVER")
+
+        # Process ended, get exit code
+        exit_code = server_process.wait()
+        last_exit_code = exit_code
+
+        if exit_code != 0:
+            server_in_error = True
+            log(f"Server process exited with code {exit_code}", "ERROR")
+        else:
+            log("Server process exited normally", "INFO")
+
+    except Exception as e:
+        log_exception(f"monitor_process crashed: {e}")
+        server_in_error = True
+
+
+# ===============================
+#   Bot class
+# ===============================
+class Bot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(command_prefix="!", intents=intents)
+
+    async def setup_hook(self):
+        """Called when bot is ready - sync commands and start status loop"""
+        try:
+            await self.tree.sync()
+            log("Bot ready. Commands synced.", "INFO")
+
+            # Set initial status based on actual server state
+            await self.update_initial_status()
+
+            # Start status update loop
+            update_status.start()
+        except Exception as e:
+            log_exception(f"Error in setup_hook: {e}")
+
+    async def update_initial_status(self):
+        """Set correct initial status when bot starts"""
+        global server_in_error
+
+        try:
+            if server_in_error:
+                await set_status("Error")
+            elif server_running():
+                await set_status("Online")
+            else:
+                await set_status("Offline")
+            log("Initial status set", "INFO")
+        except Exception as e:
+            log_exception(f"Failed to set initial status: {e}")
+
+
+bot = Bot()
+
+
+# ===============================
+#   Helpers
+# ===============================
+async def set_status(text: str):
+    """Set bot Discord status with appropriate presence"""
+    global last_status
+
+    # Don't spam if status hasn't changed
+    if text == last_status:
+        return
+
+    try:
+        # Check if bot is ready and connected
+        if not bot.is_ready() or bot.ws is None:
+            log("Bot not ready, cannot set status", "DEBUG")
+            return
+
+        # Map status text to Discord presence
+        status_map = {
+            "Online": (discord.Status.online, TRANSLATIONS.get("status_online", "🟢 Server Online")),
+            "Offline": (discord.Status.dnd, TRANSLATIONS.get("status_offline", "⚫ Server Offline")),
+            "Starting...": (discord.Status.idle, TRANSLATIONS.get("status_starting", "⏳ Starting...")),
+            "Stopping...": (discord.Status.idle, TRANSLATIONS.get("status_stopping", "⏳ Stopping...")),
+            "Error": (discord.Status.dnd, TRANSLATIONS.get("status_error", "🔴 Server Error")),
+        }
+
+        discord_status, activity_text = status_map.get(text, (discord.Status.online, text))
+
+        await bot.change_presence(
+            status=discord_status,
+            activity=discord.Game(name=activity_text)
+        )
+        log(f"Status: {discord_status.name} - {activity_text}", "STATUS")
+        last_status = text
+    except Exception as e:
+        log_exception(f"Failed to set status to: {text}")
+
+
+def server_running() -> bool:
+    """Check if server process is running"""
+    if server_process is None:
+        return False
+
+    # Check if process is still alive
+    poll = server_process.poll()
+    return poll is None
+
+
+# ===============================
+#   /start
+# ===============================
+@bot.tree.command(
+    name="start",
+    description=TRANSLATIONS["cmd_start_desc"]
+)
+async def start_server(interaction: discord.Interaction):
+    global server_process, server_in_error, last_exit_code
+
+    if server_running():
+        return await interaction.response.send_message(TRANSLATIONS["already_running"])
+
+    await interaction.response.send_message(TRANSLATIONS["starting"])
+    await set_status("Starting...")
+    log("=== START COMMAND CALLED ===", "INFO")
+
+    server_in_error = False
+    last_exit_code = None
+
+    try:
+        log(f"Executing: {START_BAT}", "DEBUG")
+        log(f"Working dir: {SERVER_DIR}", "DEBUG")
+
+        # Don't use CREATE_NEW_CONSOLE - it breaks stdout capture
+        server_process = subprocess.Popen(
+            START_BAT,
+            cwd=SERVER_DIR,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            shell=False
+        )
+
+        log(f"Process started with PID {server_process.pid}", "INFO")
+
+        # Start monitoring thread immediately
+        monitor_thread = threading.Thread(target=monitor_process, daemon=True)
+        monitor_thread.start()
+        log("Monitor thread started", "DEBUG")
+
+        # Give it a moment to start up
+        await asyncio.sleep(3)
+
+        # Check if it's still running
+        if not server_running():
+            exit_code = server_process.returncode
+            server_in_error = True
+            last_exit_code = exit_code
+            log(f"Process died immediately with code {exit_code}", "ERROR")
+
+            # Try to get last few lines from server.log if it exists
+            server_log = os.path.join(SERVER_DIR, "server.log")
+            error_detail = ""
+            if os.path.exists(server_log):
+                try:
+                    with open(server_log, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                        error_detail = "\n" + "".join(lines[-10:])
+                except Exception as e:
+                    log(f"Failed to read server.log: {e}", "WARN")
+
+            await set_status("Error")
+            return await interaction.followup.send(
+                f"{TRANSLATIONS['start_error']}\n"
+                f"Exit code: {exit_code}\n"
+                f"Check `bot.log` and `server/server.log` for details.{error_detail}"
+            )
+
+        log("Server process confirmed running", "INFO")
+        await set_status("Online")
+        await interaction.followup.send(TRANSLATIONS.get("started", "✅ Server started successfully!"))
+
+    except FileNotFoundError:
+        server_in_error = True
+        log_exception(f"Start script not found: {START_BAT}")
+        await set_status("Error")
+        return await interaction.followup.send(
+            f"{TRANSLATIONS.get('start_script_not_found', 'Start script not found')}: `{START_BAT}`"
+        )
+    except Exception as e:
+        server_in_error = True
+        log_exception(f"Failed to start server: {e}")
+        await set_status("Error")
+        return await interaction.followup.send(
+            f"{TRANSLATIONS['start_error']}\n```{str(e)}```"
+        )
+
+
+# ===============================
+#   /stop
+# ===============================
+@bot.tree.command(
+    name="stop",
+    description=TRANSLATIONS["cmd_stop_desc"]
+)
+async def stop_server(interaction: discord.Interaction):
+    global server_process, server_in_error, last_exit_code
+
+    if not server_running():
+        return await interaction.response.send_message(TRANSLATIONS["not_running"])
+
+    await interaction.response.send_message(TRANSLATIONS["stopping"])
+    await set_status("Stopping...")
+    log("=== STOP COMMAND CALLED ===", "INFO")
+
+    try:
+        server_process.stdin.write("stop\n")
+        server_process.stdin.flush()
+        log("Stop command sent to server", "INFO")
+    except Exception as e:
+        server_in_error = True
+        log_exception(f"Failed to send stop command: {e}")
+        await set_status("Error")
+        return await interaction.followup.send(TRANSLATIONS["stop_send_error"])
+
+    # Use async wait to not block event loop
+    loop = asyncio.get_event_loop()
+    try:
+        exit_code = await asyncio.wait_for(
+            loop.run_in_executor(None, server_process.wait),
+            timeout=config["server"]["stop_timeout"]
+        )
+        last_exit_code = exit_code
+        log(f"Server exited with code: {exit_code}", "INFO")
+    except asyncio.TimeoutError:
+        server_in_error = True
+        log(f"Server didn't stop within {config['server']['stop_timeout']}s timeout", "ERROR")
+        await set_status("Error")
+        return await interaction.followup.send(
+            TRANSLATIONS["stop_timeout"].format(timeout=config["server"]["stop_timeout"])
+        )
+    except Exception as e:
+        server_in_error = True
+        log_exception(f"Error waiting for server shutdown: {e}")
+        await set_status("Error")
+        return await interaction.followup.send(TRANSLATIONS["stop_error"])
+
+    if exit_code != 0:
+        server_in_error = True
+        await set_status("Error")
+        await interaction.followup.send(
+            TRANSLATIONS["stop_error_code"].format(code=exit_code)
+        )
+    else:
+        server_in_error = False
+        await set_status("Offline")
+        await interaction.followup.send(TRANSLATIONS["stopped"])
+
+    server_process = None
+
+
+# ===============================
+#   /kill
+# ===============================
+@bot.tree.command(
+    name="kill",
+    description=TRANSLATIONS["cmd_kill_desc"]
+)
+async def kill_server(interaction: discord.Interaction):
+    global server_process, server_in_error, last_exit_code
+
+    if not server_running():
+        return await interaction.response.send_message(TRANSLATIONS["not_running"])
+
+    pid = server_process.pid
+    await interaction.response.send_message(
+        TRANSLATIONS["killing"].format(pid=pid)
+    )
+    log(f"=== KILL COMMAND CALLED - PID {pid} ===", "WARN")
+
+    try:
+        # Kill the entire process tree on Windows
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, kill_process_tree, pid)
+
+        # Give it a moment to die
+        await asyncio.sleep(2)
+
+        # Try to get exit code if available
+        try:
+            if server_process.poll() is None:
+                # Still running somehow, force kill again
+                server_process.kill()
+            last_exit_code = server_process.poll()
+        except Exception as e:
+            log(f"Error getting exit code after kill: {e}", "DEBUG")
+            last_exit_code = -1  # Force killed
+
+        log(f"Process tree killed. Last exit code: {last_exit_code}", "INFO")
+
+    except Exception as e:
+        server_in_error = True
+        log_exception(f"Kill failed: {e}")
+        await set_status("Error")
+        return await interaction.followup.send(TRANSLATIONS["kill_error"])
+
+    # Clean up
+    server_process = None
+    server_in_error = False  # Reset error state after successful kill
+    await set_status("Offline")
+    await interaction.followup.send(TRANSLATIONS["killed"])
+
+
+# ===============================
+#   /status
+# ===============================
+@bot.tree.command(
+    name="status",
+    description=TRANSLATIONS["cmd_status_desc"]
+)
+async def status_cmd(interaction: discord.Interaction):
+    global server_in_error, last_exit_code
+
+    running = server_running()
+
+    # Status emoji and text
+    if running:
+        status = f"🟢 {TRANSLATIONS.get('server_online', 'Online')}"
+    elif server_in_error:
+        status = f"🔴 {TRANSLATIONS.get('server_error', 'Error')}"
+    else:
+        status = f"⚫ {TRANSLATIONS.get('server_offline', 'Offline')}"
+
+    pid = server_process.pid if running else "—"
+
+    last_lines = read_last_log_lines(config["logging"]["status_log_lines"])
+
+    # Also check server.log
+    server_log_path = os.path.join(SERVER_DIR, "server.log")
+    server_log_info = ""
+    if os.path.exists(server_log_path):
+        try:
+            with open(server_log_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+                last_5 = "".join(lines[-5:]) if lines else TRANSLATIONS["no_logs"]
+                server_log_info = f"\n\n**Server.log ({TRANSLATIONS.get('last_lines', 'last 5 lines')}):**\n```{last_5}```"
+        except Exception as e:
+            log(f"Failed to read server.log in status command: {e}", "WARN")
+
+    msg = (
+        f"**{TRANSLATIONS['status_label']}:** {status}\n"
+        f"**PID:** {pid}\n"
+        f"**{TRANSLATIONS['last_exit_code']}:** {last_exit_code if last_exit_code is not None else '—'}\n\n"
+        f"**{TRANSLATIONS['recent_logs']}:**\n```{last_lines}```{server_log_info}"
+    )
+
+    # Discord has 2000 char limit
+    if len(msg) > 1900:
+        msg = msg[:1900] + "\n...(truncated)```"
+
+    await interaction.response.send_message(msg)
+
+
+# ===============================
+#   /config
+# ===============================
+@bot.tree.command(
+    name="config",
+    description=TRANSLATIONS["cmd_config_desc"]
+)
+async def config_cmd(interaction: discord.Interaction):
+    config_summary = (
+        f"**{TRANSLATIONS['config_title']}:**\n"
+        f"• {TRANSLATIONS.get('config_language', 'Language')}: `{config['language']}`\n"
+        f"• {TRANSLATIONS.get('config_server_dir', 'Server directory')}: `{config['server']['directory']}`\n"
+        f"• {TRANSLATIONS.get('config_start_script', 'Start script')}: `{config['server']['start_script']}`\n"
+        f"• {TRANSLATIONS.get('config_stop_timeout', 'Stop timeout')}: `{config['server']['stop_timeout']}s`\n"
+        f"• {TRANSLATIONS.get('config_log_file', 'Log file')}: `{config['logging']['bot_log_file']}`\n"
+    )
+    await interaction.response.send_message(config_summary)
+
+
+# ===============================
+#   /logs
+# ===============================
+@bot.tree.command(
+    name="logs",
+    description=TRANSLATIONS.get("cmd_logs_desc", "Show last lines from server.log file")
+)
+async def logs_cmd(interaction: discord.Interaction):
+    server_log_path = os.path.join(SERVER_DIR, "server.log")
+
+    if not os.path.exists(server_log_path):
+        return await interaction.response.send_message(
+            TRANSLATIONS.get("logs_not_found", "❌ server.log file not found. Server may not have started yet.")
+        )
+
+    try:
+        with open(server_log_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            last_lines = "".join(lines[-30:]) if lines else TRANSLATIONS["no_logs"]
+
+        msg = f"**Server.log ({TRANSLATIONS.get('last_lines_30', 'last 30 lines')}):**\n```{last_lines}```"
+
+        # Discord limit
+        if len(msg) > 1900:
+            msg = msg[:1900] + "\n...(truncated)```"
+
+        await interaction.response.send_message(msg)
+    except Exception as e:
+        log_exception(f"Error reading server.log: {e}")
+        await interaction.response.send_message(
+            f"{TRANSLATIONS.get('logs_read_error', '❌ Error reading server.log')}: {e}"
+        )
+
+
+# ===============================
+#   Background task
+# ===============================
+@tasks.loop(seconds=15)
+async def update_status():
+    """Periodically update bot status based on server state"""
+    global server_in_error
+
+    try:
+        if server_in_error:
+            await set_status("Error")
+            return
+
+        if server_running():
+            await set_status("Online")
+        else:
+            await set_status("Offline")
+    except Exception as e:
+        log_exception(f"update_status crashed: {e}")
+
+
+@update_status.before_loop
+async def before_status_loop():
+    """Wait for bot to be ready before starting status loop"""
+    await bot.wait_until_ready()
+    log("Status update loop starting", "INFO")
+
+
+# ===============================
+#   Run bot
+# ===============================
+if __name__ == "__main__":
+    log("=" * 60, "INFO")
+    log(f"Minecraft Server Bot v3.3", "INFO")
+    log(f"Language: {LANG}", "INFO")
+    log(f"Server directory: {SERVER_DIR}", "INFO")
+    log(f"Start script: {START_BAT}", "INFO")
+    log("=" * 60, "INFO")
+
+    try:
+        bot.run(TOKEN)
+    except KeyboardInterrupt:
+        log("Bot stopped by user (Ctrl+C)", "INFO")
+    except Exception as e:
+        log_exception(f"Bot crashed: {e}")
+        raise
