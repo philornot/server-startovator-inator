@@ -11,6 +11,15 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
+# Import AI module (optional - bot works without it)
+try:
+    from ai import AIBot
+
+    AI_AVAILABLE = True
+except ImportError:
+    AI_AVAILABLE = False
+    print("[WARN] ai.py not found - AI responses disabled")
+
 load_dotenv()
 
 # ===============================
@@ -59,11 +68,22 @@ if not os.path.exists(START_BAT):
 LANG = config.get("language", "en")
 TRANSLATIONS = config["translations"][LANG]
 
+# Initialize AI (if available)
+ai_bot = None
+if AI_AVAILABLE:
+    try:
+        ai_bot = AIBot(config, TRANSLATIONS)
+        if ai_bot.enabled:
+            print("[INFO] AI personality module loaded successfully")
+    except Exception as e:
+        print(f"[WARN] Failed to initialize AI module: {e}")
+        ai_bot = None
+
 # Global state
 server_process: Optional[subprocess.Popen] = None
 server_in_error = False
 last_exit_code = None
-last_status = None  # Changed from "Offline" to None to force initial update
+last_status = None
 
 
 # ===============================
@@ -139,13 +159,11 @@ def monitor_process():
         return
 
     try:
-        # Read output line by line
         for line in server_process.stdout:
             stripped = line.strip()
-            if stripped:  # Only log non-empty lines
+            if stripped:
                 log(f"{stripped}", "SERVER")
 
-        # Process ended, get exit code
         exit_code = server_process.wait()
         last_exit_code = exit_code
 
@@ -175,10 +193,7 @@ class Bot(commands.Bot):
             await self.tree.sync()
             log("Bot ready. Commands synced.", "INFO")
 
-            # Set initial status based on actual server state
             await self.update_initial_status()
-
-            # Start status update loop
             update_status.start()
         except Exception as e:
             log_exception(f"Error in setup_hook: {e}")
@@ -203,23 +218,62 @@ bot = Bot()
 
 
 # ===============================
+#   AI Message Handler
+# ===============================
+@bot.event
+async def on_message(message: discord.Message):
+    """Handle messages that mention the bot"""
+    # Ignore own messages
+    if message.author == bot.user:
+        return
+
+    # Process commands normally
+    await bot.process_commands(message)
+
+    # Check if bot was mentioned and AI is available
+    if bot.user in message.mentions and ai_bot and ai_bot.enabled:
+        log(f"Bot mentioned by {message.author.name}: {message.content}", "INFO")
+
+        # Get message history for context
+        history = []
+        try:
+            async for msg in message.channel.history(limit=20):
+                history.insert(0, msg)
+        except Exception as e:
+            log(f"Failed to fetch message history: {e}", "WARN")
+
+        # Generate AI response
+        async with message.channel.typing():
+            response = await ai_bot.generate_response(
+                message, history,
+                server_running(), server_in_error, last_exit_code,
+                server_process, SERVER_DIR
+            )
+
+        # Send response (split if too long)
+        if len(response) > 2000:
+            chunks = [response[i:i + 2000] for i in range(0, len(response), 2000)]
+            for chunk in chunks:
+                await message.reply(chunk)
+        else:
+            await message.reply(response)
+
+
+# ===============================
 #   Helpers
 # ===============================
 async def set_status(text: str):
     """Set bot Discord status with appropriate presence"""
     global last_status
 
-    # Don't spam if status hasn't changed
     if text == last_status:
         return
 
     try:
-        # Check if bot is ready and connected
         if not bot.is_ready() or bot.ws is None:
             log("Bot not ready, cannot set status", "DEBUG")
             return
 
-        # Map status text to Discord presence
         status_map = {
             "Online": (discord.Status.online, TRANSLATIONS.get("status_online", "🟢 Server Online")),
             "Offline": (discord.Status.dnd, TRANSLATIONS.get("status_offline", "⚫ Server Offline")),
@@ -244,8 +298,6 @@ def server_running() -> bool:
     """Check if server process is running"""
     if server_process is None:
         return False
-
-    # Check if process is still alive
     poll = server_process.poll()
     return poll is None
 
@@ -274,7 +326,6 @@ async def start_server(interaction: discord.Interaction):
         log(f"Executing: {START_BAT}", "DEBUG")
         log(f"Working dir: {SERVER_DIR}", "DEBUG")
 
-        # Don't use CREATE_NEW_CONSOLE - it breaks stdout capture
         server_process = subprocess.Popen(
             START_BAT,
             cwd=SERVER_DIR,
@@ -289,22 +340,18 @@ async def start_server(interaction: discord.Interaction):
 
         log(f"Process started with PID {server_process.pid}", "INFO")
 
-        # Start monitoring thread immediately
         monitor_thread = threading.Thread(target=monitor_process, daemon=True)
         monitor_thread.start()
         log("Monitor thread started", "DEBUG")
 
-        # Give it a moment to start up
         await asyncio.sleep(3)
 
-        # Check if it's still running
         if not server_running():
             exit_code = server_process.returncode
             server_in_error = True
             last_exit_code = exit_code
             log(f"Process died immediately with code {exit_code}", "ERROR")
 
-            # Try to get last few lines from server.log if it exists
             server_log = os.path.join(SERVER_DIR, "server.log")
             error_detail = ""
             if os.path.exists(server_log):
@@ -369,7 +416,6 @@ async def stop_server(interaction: discord.Interaction):
         await set_status("Error")
         return await interaction.followup.send(TRANSLATIONS["stop_send_error"])
 
-    # Use async wait to not block event loop
     loop = asyncio.get_event_loop()
     try:
         exit_code = await asyncio.wait_for(
@@ -425,22 +471,18 @@ async def kill_server(interaction: discord.Interaction):
     log(f"=== KILL COMMAND CALLED - PID {pid} ===", "WARN")
 
     try:
-        # Kill the entire process tree on Windows
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, kill_process_tree, pid)
 
-        # Give it a moment to die
         await asyncio.sleep(2)
 
-        # Try to get exit code if available
         try:
             if server_process.poll() is None:
-                # Still running somehow, force kill again
                 server_process.kill()
             last_exit_code = server_process.poll()
         except Exception as e:
             log(f"Error getting exit code after kill: {e}", "DEBUG")
-            last_exit_code = -1  # Force killed
+            last_exit_code = -1
 
         log(f"Process tree killed. Last exit code: {last_exit_code}", "INFO")
 
@@ -450,9 +492,8 @@ async def kill_server(interaction: discord.Interaction):
         await set_status("Error")
         return await interaction.followup.send(TRANSLATIONS["kill_error"])
 
-    # Clean up
     server_process = None
-    server_in_error = False  # Reset error state after successful kill
+    server_in_error = False
     await set_status("Offline")
     await interaction.followup.send(TRANSLATIONS["killed"])
 
@@ -469,7 +510,6 @@ async def status_cmd(interaction: discord.Interaction):
 
     running = server_running()
 
-    # Status emoji and text
     if running:
         status = f"🟢 {TRANSLATIONS.get('server_online', 'Online')}"
     elif server_in_error:
@@ -481,7 +521,6 @@ async def status_cmd(interaction: discord.Interaction):
 
     last_lines = read_last_log_lines(config["logging"]["status_log_lines"])
 
-    # Also check server.log
     server_log_path = os.path.join(SERVER_DIR, "server.log")
     server_log_info = ""
     if os.path.exists(server_log_path):
@@ -500,7 +539,6 @@ async def status_cmd(interaction: discord.Interaction):
         f"**{TRANSLATIONS['recent_logs']}:**\n```{last_lines}```{server_log_info}"
     )
 
-    # Discord has 2000 char limit
     if len(msg) > 1900:
         msg = msg[:1900] + "\n...(truncated)```"
 
@@ -548,7 +586,6 @@ async def logs_cmd(interaction: discord.Interaction):
 
         msg = f"**Server.log ({TRANSLATIONS.get('last_lines_30', 'last 30 lines')}):**\n```{last_lines}```"
 
-        # Discord limit
         if len(msg) > 1900:
             msg = msg[:1900] + "\n...(truncated)```"
 
@@ -593,10 +630,11 @@ async def before_status_loop():
 # ===============================
 if __name__ == "__main__":
     log("=" * 60, "INFO")
-    log(f"Minecraft Server Bot v3.3", "INFO")
+    log(f"Minecraft Server Bot v3.4", "INFO")
     log(f"Language: {LANG}", "INFO")
     log(f"Server directory: {SERVER_DIR}", "INFO")
     log(f"Start script: {START_BAT}", "INFO")
+    log(f"AI Module: {'Enabled' if (ai_bot and ai_bot.enabled) else 'Disabled'}", "INFO")
     log("=" * 60, "INFO")
 
     try:
