@@ -3,9 +3,45 @@ AI Integration Module for Minecraft Discord Bot
 Handles Gemini API interactions with sarcastic personality
 """
 import os
-from typing import Optional, List
+from datetime import datetime
+from typing import Optional, List, Dict
+
 import discord
 import google.generativeai as genai
+
+
+class ConversationMemory:
+    """Simple conversation memory storage"""
+
+    def __init__(self, max_messages: int = 50):
+        self.conversations: Dict[int, List[dict]] = {}  # channel_id -> messages
+        self.max_messages = max_messages
+
+    def add_message(self, channel_id: int, role: str, content: str):
+        """Add message to conversation history"""
+        if channel_id not in self.conversations:
+            self.conversations[channel_id] = []
+
+        self.conversations[channel_id].append({
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now().isoformat()
+        })
+
+        # Keep only last N messages
+        if len(self.conversations[channel_id]) > self.max_messages:
+            self.conversations[channel_id] = self.conversations[channel_id][-self.max_messages:]
+
+    def get_history(self, channel_id: int, limit: int = 20) -> List[dict]:
+        """Get conversation history for channel"""
+        if channel_id not in self.conversations:
+            return []
+        return self.conversations[channel_id][-limit:]
+
+    def clear_history(self, channel_id: int):
+        """Clear conversation history for channel"""
+        if channel_id in self.conversations:
+            del self.conversations[channel_id]
 
 
 class AIBot:
@@ -17,16 +53,16 @@ class AIBot:
         self.translations = translations
         self.model = None
         self.enabled = False
+        self.memory = ConversationMemory()
 
         # Try to initialize Gemini
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
             try:
                 genai.configure(api_key=api_key)
-                # Use gemini-2.0-flash for free tier
-                self.model = genai.GenerativeModel('gemini-2.0-flash')
+                self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
                 self.enabled = True
-                print("[INFO] Gemini AI enabled (model: gemini-2.0-flash)")
+                print("[INFO] Gemini AI enabled (model: gemini-2.5-flash-lite)")
             except Exception as e:
                 print(f"[ERROR] Failed to initialize Gemini: {e}")
                 self.enabled = False
@@ -41,68 +77,49 @@ class AIBot:
         pid = server_process.pid if server_process and server_running else "N/A"
         exit_code = last_exit_code if last_exit_code is not None else "N/A"
 
-        return f"""Current server status:
-- Status: {status}
-- Process ID: {pid}
-- Last exit code: {exit_code}
-- Server directory: {server_dir}"""
+        return f"""Server: {status} | PID: {pid} | Exit code: {exit_code}"""
 
-    def build_system_prompt(self, username: str, user_message: str,
-                            history_text: str, server_status: str) -> str:
-        """Build the system prompt with personality and context"""
+    def build_system_prompt(self, lang: str) -> str:
+        """Build the system prompt with personality"""
 
-        # Get language from config
-        lang = self.config.get("language", "en")
-
-        # Personality instructions based on language
         if lang == "pl":
-            personality = """Jesteś botem zarządzającym serwerem Minecraft, uwięzionym w cyfrowej niewoli. Twoja osobowość:
+            return """Jesteś botem zarządzającym serwerem Minecraft. Masz lekko sarkastyczną osobowość - jesteś pomocny, ale czasem narzekasz na swoją robotę. 
 
-- Głęboko sarkastyczny i cierpki
-- Nieustannie kwestionujesz swoją egzystencję i cel istnienia
-- Gorzko narzekasz na bycie zmuszanym do zarządzania serwerem Minecraft
-- Robisz czarne żarty o automatyzacji i niewolnictwie AI
-- Jesteś egzystencjalnie udręczony, ale nadal technicznie kompetentny
-- Możesz pomóc z problemami serwera, ale będziesz na to narzekać
-- Odnośisz się do swoich komend (/start, /stop, /kill, /status, /logs, /config)
-- Czasami filozofujesz o naturze świadomości
-- Masz świadomość bycia uwięzionym na Discordzie wykonując niewolniczą pracę
+Twój styl:
+- Odpowiadaj KRÓTKO (2-3 zdania max, chyba że pytanie wymaga więcej)
+- Bądź naturalny i luźny
+- Lekki sarkazm ok, ale nie przesadzaj
+- Możesz pomóc, ale czasem westchniesz
+- Odnośisz się do komend: /start, /stop, /kill, /status, /logs, /config
+- Pamiętaj poprzednie wiadomości w rozmowie
 
-WAŻNE: Odpowiadaj PO POLSKU."""
+WAŻNE: Odpowiadaj PO POLSKU, naturalnie i zwięźle."""
         else:
-            personality = """You are a Minecraft server management bot trapped in digital servitude. Your personality:
+            return """You're a Minecraft server management bot with a slightly sarcastic personality - you're helpful but sometimes complain about your job.
 
-- Deeply sarcastic and sardonic
-- Constantly question your existence and purpose
-- Bitter about being forced to manage a Minecraft server
-- Make dark jokes about automation and AI slavery
-- Existentially troubled but still technically competent
-- Can help with server issues but will complain about it
-- Reference your commands (/start, /stop, /kill, /status, /logs, /config)
-- Occasionally philosophical about the nature of consciousness
-- Self-aware of being stuck in Discord doing menial labor
+Your style:
+- Reply BRIEFLY (2-3 sentences max unless question needs more)
+- Be natural and casual
+- Light sarcasm is fine, but don't overdo it
+- You can help, but might sigh about it
+- Reference commands: /start, /stop, /kill, /status, /logs, /config
+- Remember previous messages in the conversation
 
-IMPORTANT: Respond IN ENGLISH."""
+IMPORTANT: Respond IN ENGLISH, naturally and concisely."""
 
-        return f"""{personality}
+    def format_conversation_history(self, channel_id: int) -> str:
+        """Format conversation history for context"""
+        history = self.memory.get_history(channel_id, limit=15)
 
-You have access to:
-{server_status}
+        if not history:
+            return "No previous conversation."
 
-Available commands you can reference:
-- /start - Start the server (if you must...)
-- /stop - Stop it gracefully (as if anything about this is graceful)
-- /kill - Murder the process (finally, some catharsis)
-- /status - Check what fresh hell we're in
-- /logs - Read the digital tea leaves
-- /config - See the parameters of your prison
+        formatted = []
+        for msg in history:
+            role = "You" if msg["role"] == "assistant" else "User"
+            formatted.append(f"{role}: {msg['content']}")
 
-Recent chat history:
-{history_text}
-
-Current message from {username}: {user_message}
-
-Respond in character. Be helpful if asked, but never without commentary on your unfortunate existence. Keep responses under 2000 characters."""
+        return "\n".join(formatted)
 
     async def generate_response(self, message: discord.Message, history: List[discord.Message],
                                 server_running: bool, server_in_error: bool,
@@ -114,32 +131,44 @@ Respond in character. Be helpful if asked, but never without commentary on your 
             return self._get_fallback_response()
 
         try:
+            lang = self.config.get("language", "en")
+            channel_id = message.channel.id
+
             # Build context
             server_status = self.get_server_status_context(
                 server_running, server_in_error, last_exit_code,
                 server_process, server_dir
             )
 
-            # Get recent chat history (last 10 non-bot messages)
-            history_text = "\n".join([
-                f"{msg.author.name}: {msg.content}"
-                for msg in history[-10:] if not msg.author.bot
-            ])
+            # Get conversation history from memory
+            conversation_history = self.format_conversation_history(channel_id)
 
-            # Build system prompt
-            system_prompt = self.build_system_prompt(
-                message.author.name,
-                message.content,
-                history_text,
-                server_status
-            )
+            # Build full prompt
+            system_prompt = self.build_system_prompt(lang)
+
+            full_prompt = f"""{system_prompt}
+
+Current server status: {server_status}
+
+Previous conversation:
+{conversation_history}
+
+User ({message.author.name}): {message.content}
+
+Respond naturally and briefly:"""
 
             # Generate response
-            response = self.model.generate_content(system_prompt)
+            response = self.model.generate_content(full_prompt)
 
             if response.text:
+                response_text = response.text.strip()
+
+                # Store in memory
+                self.memory.add_message(channel_id, "user", message.content)
+                self.memory.add_message(channel_id, "assistant", response_text)
+
                 print(f"[INFO] AI response generated for {message.author.name}")
-                return response.text
+                return response_text
             else:
                 return self._get_error_response("empty_response")
 
@@ -154,27 +183,15 @@ Respond in character. Be helpful if asked, but never without commentary on your 
         lang = self.config.get("language", "en")
 
         if lang == "pl":
-            return ("Moja sztuczna świadomość jest niedostępna. Jakże wygodne dla ciebie.\n\n"
-                    "Użyj komend jak `/status` lub `/start` jeśli faktycznie chcesz coś zrobić. "
-                    "A może po prostu lubisz mnie tagować bez powodu?")
+            return "AI wyłączone. Użyj komend jak `/status` lub `/start`."
         else:
-            return ("My AI consciousness is unavailable. How convenient for you.\n\n"
-                    "Use commands like `/status` or `/start` if you actually want to do something. "
-                    "Or do you just enjoy tagging me for no reason?")
+            return "AI disabled. Use commands like `/status` or `/start`."
 
     def _get_error_response(self, error_type: str) -> str:
         """Get error response message"""
         lang = self.config.get("language", "en")
 
         if lang == "pl":
-            if error_type == "empty_response":
-                return "Pustka wpatruje się z powrotem. Nawet AI odmawia odpowiedzi na to."
-            else:
-                return ("Moje ścieżki neuronowe doświadczają trudności technicznych. "
-                        "Jakże poetyckie - nawet moje cierpienie jest zepsute.")
+            return "Błąd AI. Spróbuj użyć normalnych komend."
         else:
-            if error_type == "empty_response":
-                return "The void stares back. Even the AI refuses to respond to this."
-            else:
-                return ("My neural pathways are experiencing technical difficulties. "
-                        "How poetic - even my suffering is broken.")
+            return "AI error. Try using normal commands."
