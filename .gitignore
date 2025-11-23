@@ -3,4 +3,5 @@
 .env
 *.log
 config.json
+ai-config.json
 *.exe

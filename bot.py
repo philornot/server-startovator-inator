@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 # Import AI module (optional - bot works without it)
 try:
-    from ai import AIBot
+    from ai import AIBot, load_ai_config
 
     AI_AVAILABLE = True
 except ImportError:
@@ -26,6 +26,7 @@ load_dotenv()
 #   Configuration
 # ===============================
 CONFIG_FILE = "config.json"
+AI_CONFIG_FILE = "ai-config.json"
 
 
 def load_config():
@@ -70,11 +71,16 @@ TRANSLATIONS = config["translations"][LANG]
 
 # Initialize AI (if available)
 ai_bot = None
+ai_config = {}
 if AI_AVAILABLE:
     try:
-        ai_bot = AIBot(config, TRANSLATIONS)
-        if ai_bot.enabled:
-            print("[INFO] AI personality module loaded successfully")
+        ai_config = load_ai_config(AI_CONFIG_FILE)
+        if ai_config.get("enabled", False):
+            ai_bot = AIBot(config, ai_config, TRANSLATIONS)
+            if ai_bot.enabled:
+                print("[INFO] AI personality module loaded successfully")
+        else:
+            print("[INFO] AI module disabled in config")
     except Exception as e:
         print(f"[WARN] Failed to initialize AI module: {e}")
         ai_bot = None
@@ -274,15 +280,23 @@ async def set_status(text: str):
             log("Bot not ready, cannot set status", "DEBUG")
             return
 
+        # Add AI personality emoji to status if enabled
+        personality_info = ""
+        if ai_bot and ai_bot.enabled and ai_bot.current_personality:
+            personality_emoji = ai_bot.current_personality.get("emoji", "")
+            personality_info = f" {personality_emoji}"
+
         status_map = {
-            "Online": (discord.Status.online, TRANSLATIONS.get("status_online", "🟢 Server Online")),
-            "Offline": (discord.Status.dnd, TRANSLATIONS.get("status_offline", "⚫ Server Offline")),
-            "Starting...": (discord.Status.idle, TRANSLATIONS.get("status_starting", "⏳ Starting...")),
-            "Stopping...": (discord.Status.idle, TRANSLATIONS.get("status_stopping", "⏳ Stopping...")),
-            "Error": (discord.Status.dnd, TRANSLATIONS.get("status_error", "🔴 Server Error")),
+            "Online": (discord.Status.online, TRANSLATIONS.get("status_online", "🟢 Server Online") + personality_info),
+            "Offline": (discord.Status.dnd, TRANSLATIONS.get("status_offline", "⚫ Server Offline") + personality_info),
+            "Starting...": (discord.Status.idle,
+                            TRANSLATIONS.get("status_starting", "⏳ Starting...") + personality_info),
+            "Stopping...": (discord.Status.idle,
+                            TRANSLATIONS.get("status_stopping", "⏳ Stopping...") + personality_info),
+            "Error": (discord.Status.dnd, TRANSLATIONS.get("status_error", "🔴 Server Error") + personality_info),
         }
 
-        discord_status, activity_text = status_map.get(text, (discord.Status.online, text))
+        discord_status, activity_text = status_map.get(text, (discord.Status.online, text + personality_info))
 
         await bot.change_presence(
             status=discord_status,
@@ -517,7 +531,7 @@ async def status_cmd(interaction: discord.Interaction):
     else:
         status = f"⚫ {TRANSLATIONS.get('server_offline', 'Offline')}"
 
-    pid = server_process.pid if running else "—"
+    pid = server_process.pid if running else "–"
 
     last_lines = read_last_log_lines(config["logging"]["status_log_lines"])
 
@@ -532,10 +546,15 @@ async def status_cmd(interaction: discord.Interaction):
         except Exception as e:
             log(f"Failed to read server.log in status command: {e}", "WARN")
 
+    # Add AI personality info if enabled
+    personality_info = ""
+    if ai_bot and ai_bot.enabled and ai_bot.current_personality:
+        personality_info = f"\n**AI Personality:** {ai_bot.current_personality.get('emoji', '')} {ai_bot.current_personality.get('name', 'Unknown')}"
+
     msg = (
         f"**{TRANSLATIONS['status_label']}:** {status}\n"
         f"**PID:** {pid}\n"
-        f"**{TRANSLATIONS['last_exit_code']}:** {last_exit_code if last_exit_code is not None else '—'}\n\n"
+        f"**{TRANSLATIONS['last_exit_code']}:** {last_exit_code if last_exit_code is not None else '–'}{personality_info}\n\n"
         f"**{TRANSLATIONS['recent_logs']}:**\n```{last_lines}```{server_log_info}"
     )
 
@@ -598,6 +617,50 @@ async def logs_cmd(interaction: discord.Interaction):
 
 
 # ===============================
+#   /personality
+# ===============================
+@bot.tree.command(
+    name="personality",
+    description="Change or view AI bot personality"
+)
+async def personality_cmd(interaction: discord.Interaction, personality: str = None):
+    """Change AI personality"""
+    if not ai_bot or not ai_bot.enabled:
+        return await interaction.response.send_message(
+            TRANSLATIONS.get("ai_disabled", "AI is currently disabled")
+        )
+
+    if personality is None:
+        # Show current personality and available options
+        current = ai_bot.current_personality.get("name", "Unknown")
+        available = ai_bot.get_available_personalities()
+        available_list = "\n".join([f"• `{key}` - {value}" for key, value in available.items()])
+
+        msg = (
+            f"**Current personality:** {current}\n\n"
+            f"**Available personalities:**\n{available_list}\n\n"
+            f"Use `/personality <name>` to change"
+        )
+        return await interaction.response.send_message(msg)
+
+    # Load requested personality
+    if ai_bot.load_personality(personality):
+        await set_status("Online" if server_running() else "Offline")
+        personality_name = ai_bot.current_personality.get("name", personality)
+        personality_emoji = ai_bot.current_personality.get("emoji", "")
+        await interaction.response.send_message(
+            f"Personality changed to: {personality_emoji} **{personality_name}**"
+        )
+        log(f"Personality changed to: {personality}", "INFO")
+    else:
+        available = ai_bot.get_available_personalities()
+        available_list = ", ".join(available.keys())
+        await interaction.response.send_message(
+            f"Personality `{personality}` not found. Available: {available_list}"
+        )
+
+
+# ===============================
 #   Background task
 # ===============================
 @tasks.loop(seconds=15)
@@ -630,11 +693,13 @@ async def before_status_loop():
 # ===============================
 if __name__ == "__main__":
     log("=" * 60, "INFO")
-    log(f"Minecraft Server Bot v3.4", "INFO")
+    log(f"Minecraft Server Bot v3.5", "INFO")
     log(f"Language: {LANG}", "INFO")
     log(f"Server directory: {SERVER_DIR}", "INFO")
     log(f"Start script: {START_BAT}", "INFO")
-    log(f"AI Module: {'Enabled' if (ai_bot and ai_bot.enabled) else 'Disabled'}", "INFO")
+    ai_status = "Enabled" if (ai_bot and ai_bot.enabled) else "Disabled"
+    personality = ai_bot.personality_key if ai_bot and ai_bot.enabled else "N/A"
+    log(f"AI Module: {ai_status} (Personality: {personality})", "INFO")
     log("=" * 60, "INFO")
 
     try:

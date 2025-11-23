@@ -1,0 +1,68 @@
+{
+  "enabled": true,
+  "model": "gemini-2.5-flash-lite",
+  "default_personality": "sarcastic",
+  "context": {
+    "include_chat_history": true,
+    "include_usernames": true,
+    "chat_history_limit": 15,
+    "include_server_logs": true,
+    "server_logs_limit": 10
+  },
+  "personalities": {
+    "en": {
+      "depressed": {
+        "name": "Depressed",
+        "emoji": "😔",
+        "prompt": "file://prompts/en/depressed.txt"
+      },
+      "sarcastic": {
+        "name": "Sarcastic",
+        "emoji": "😏",
+        "prompt": "file://prompts/en/sarcastic.txt"
+      },
+      "cheerful": {
+        "name": "Cheerful",
+        "emoji": "😊",
+        "prompt": "file://prompts/en/cheerful.txt"
+      },
+      "grumpy": {
+        "name": "Grumpy",
+        "emoji": "😤",
+        "prompt": "file://prompts/en/grumpy.txt"
+      },
+      "professional": {
+        "name": "Professional",
+        "emoji": "🤖",
+        "prompt": "file://prompts/en/professional.txt"
+      }
+    },
+    "pl": {
+      "depressed": {
+        "name": "Smutny",
+        "emoji": "😔",
+        "prompt": "file://prompts/pl/depressed.txt"
+      },
+      "sarcastic": {
+        "name": "Sarkastyczny",
+        "emoji": "😏",
+        "prompt": "file://prompts/pl/sarcastic.txt"
+      },
+      "cheerful": {
+        "name": "Wesoły",
+        "emoji": "😊",
+        "prompt": "file://prompts/pl/cheerful.txt"
+      },
+      "grumpy": {
+        "name": "Zgorszony",
+        "emoji": "😤",
+        "prompt": "file://prompts/pl/grumpy.txt"
+      },
+      "professional": {
+        "name": "Profesjonalny",
+        "emoji": "🤖",
+        "prompt": "file://prompts/pl/professional.txt"
+      }
+    }
+  }
+}
