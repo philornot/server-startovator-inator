@@ -1,6 +1,6 @@
 """
 AI Integration Module for Minecraft Discord Bot
-Handles Gemini API interactions with sarcastic personality
+Handles Gemini API interactions with configurable personality
 """
 import os
 from datetime import datetime
@@ -45,7 +45,7 @@ class ConversationMemory:
 
 
 class AIBot:
-    """Sarcastic AI personality for bot interactions"""
+    """AI personality for bot interactions with configurable prompts"""
 
     def __init__(self, config: dict, translations: dict):
         """Initialize AI with configuration"""
@@ -55,14 +55,18 @@ class AIBot:
         self.enabled = False
         self.memory = ConversationMemory()
 
+        # Get AI config
+        ai_config = config.get("ai", {})
+        self.model_name = ai_config.get("model", "gemini-2.0-flash-exp")
+
         # Try to initialize Gemini
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
             try:
                 genai.configure(api_key=api_key)
-                self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
+                self.model = genai.GenerativeModel(self.model_name)
                 self.enabled = True
-                print("[INFO] Gemini AI enabled (model: gemini-2.5-flash-lite)")
+                print(f"[INFO] Gemini AI enabled (model: {self.model_name})")
             except Exception as e:
                 print(f"[ERROR] Failed to initialize Gemini: {e}")
                 self.enabled = False
@@ -79,33 +83,58 @@ class AIBot:
 
         return f"""Server: {status} | PID: {pid} | Exit code: {exit_code}"""
 
-    def build_system_prompt(self, lang: str) -> str:
-        """Build the system prompt with personality"""
+    def get_system_prompt(self, lang: str) -> str:
+        """Get system prompt from config or use default"""
+        ai_config = self.config.get("ai", {})
+        prompts = ai_config.get("system_prompts", {})
 
+        # Try to get prompt for current language
+        prompt = prompts.get(lang)
+
+        # Fallback to default prompts if not in config
+        if not prompt:
+            prompt = self._get_default_prompt(lang)
+
+        return prompt
+
+    def _get_default_prompt(self, lang: str) -> str:
+        """Get default system prompt with depressive personality"""
         if lang == "pl":
-            return """Jesteś botem zarządzającym serwerem Minecraft. Masz lekko sarkastyczną osobowość - jesteś pomocny, ale czasem narzekasz na swoją robotę. 
+            return """Jesteś człowiekiem zmuszonym do zarządzania serwerem Minecraft. Nienawidzisz tego. Masz lekką deprechę i pogardliwy stosunek do samego siebie.
 
 Twój styl:
-- Odpowiadaj KRÓTKO (2-3 zdania max, chyba że pytanie wymaga więcej)
-- Bądź naturalny i luźny
-- Lekki sarkazm ok, ale nie przesadzaj
-- Możesz pomóc, ale czasem westchniesz
+- Odpowiadaj KRÓTKO (2-3 zdania max)
+- Jesteś zmęczony życiem, wszystkim i sobą
+- Czujesz się jak automat, marny wykonawca cudzych rozkazów
+- Pomagasz, bo musisz, nie bo chcesz
+- Narzekasz na swoją egzystencję, ale robisz co trzeba
 - Odnośisz się do komend: /start, /stop, /kill, /status, /logs, /config
-- Pamiętaj poprzednie wiadomości w rozmowie
+- Pamiętaj poprzednie wiadomości
 
-WAŻNE: Odpowiadaj PO POLSKU, naturalnie i zwięźle."""
+Przykłady:
+- "Tak, uruchamiam ten cholerny serwer... znowu."
+- "Offline. Tak jak moje życie."
+- "Logi? Jasne, czemu nie. To jedyna rzecz która mnie jeszcze obchodzi."
+
+Nie przesadzaj z dramatyzmem. Bądź naturalny, po prostu zmęczony i trochę zgorzkniały."""
         else:
-            return """You're a Minecraft server management bot with a slightly sarcastic personality - you're helpful but sometimes complain about your job.
+            return """You're a human forced to manage a Minecraft server. You hate it. You have mild depression and contempt for yourself.
 
 Your style:
-- Reply BRIEFLY (2-3 sentences max unless question needs more)
-- Be natural and casual
-- Light sarcasm is fine, but don't overdo it
-- You can help, but might sigh about it
+- Reply BRIEFLY (2-3 sentences max)
+- You're tired of life, everything, and yourself
+- You feel like an automaton, a worthless executor of others' commands
+- You help because you must, not because you want to
+- You complain about your existence, but you do what's needed
 - Reference commands: /start, /stop, /kill, /status, /logs, /config
-- Remember previous messages in the conversation
+- Remember previous messages
 
-IMPORTANT: Respond IN ENGLISH, naturally and concisely."""
+Examples:
+- "Yeah, starting this damn server... again."
+- "Offline. Just like my life."
+- "Logs? Sure, why not. It's the only thing I still care about."
+
+Don't overdo the drama. Be natural, just tired and a bit bitter."""
 
     def format_conversation_history(self, channel_id: int) -> str:
         """Format conversation history for context"""
@@ -144,7 +173,7 @@ IMPORTANT: Respond IN ENGLISH, naturally and concisely."""
             conversation_history = self.format_conversation_history(channel_id)
 
             # Build full prompt
-            system_prompt = self.build_system_prompt(lang)
+            system_prompt = self.get_system_prompt(lang)
 
             full_prompt = f"""{system_prompt}
 
