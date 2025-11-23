@@ -19,7 +19,14 @@ class ConversationMemory:
         self.max_messages = max_messages
 
     def add_message(self, channel_id: int, role: str, content: str, username: str = ""):
-        """Add message to conversation history"""
+        """Add message to conversation history
+
+        Args:
+            channel_id: Discord channel ID
+            role: Message role (user/assistant)
+            content: Message content
+            username: Username of the sender
+        """
         if channel_id not in self.conversations:
             self.conversations[channel_id] = []
 
@@ -34,13 +41,25 @@ class ConversationMemory:
             self.conversations[channel_id] = self.conversations[channel_id][-self.max_messages:]
 
     def get_history(self, channel_id: int, limit: int = 20) -> List[dict]:
-        """Get conversation history for channel"""
+        """Get conversation history for channel
+
+        Args:
+            channel_id: Discord channel ID
+            limit: Maximum number of messages to return
+
+        Returns:
+            List of conversation messages
+        """
         if channel_id not in self.conversations:
             return []
         return self.conversations[channel_id][-limit:]
 
     def clear_history(self, channel_id: int):
-        """Clear conversation history for channel"""
+        """Clear conversation history for channel
+
+        Args:
+            channel_id: Discord channel ID
+        """
         if channel_id in self.conversations:
             del self.conversations[channel_id]
 
@@ -49,7 +68,13 @@ class AIBot:
     """AI personality for bot interactions with configurable personalities"""
 
     def __init__(self, config: dict, ai_config: dict, translations: dict):
-        """Initialize AI with configuration"""
+        """Initialize AI with configuration
+
+        Args:
+            config: Main bot configuration
+            ai_config: AI-specific configuration
+            translations: Translation strings
+        """
         self.config = config
         self.ai_config = ai_config
         self.translations = translations
@@ -60,7 +85,7 @@ class AIBot:
         self.personality_key = "depressed"  # Default personality key
 
         # Get AI config
-        self.model_name = ai_config.get("model", "gemini-2.0-flash-exp")
+        self.model_name = ai_config.get("model", "gemini-2.5-flash-lite")
         self.default_personality_key = ai_config.get("default_personality", "depressed")
 
         # Try to initialize Gemini
@@ -80,7 +105,14 @@ class AIBot:
             print("[WARN] GEMINI_API_KEY not found - AI responses disabled")
 
     def load_personality(self, personality_key: str) -> bool:
-        """Load personality by key"""
+        """Load personality by key
+
+        Args:
+            personality_key: Key of the personality to load
+
+        Returns:
+            True if personality was loaded successfully
+        """
         lang = self.config.get("language", "en")
         personalities = self.ai_config.get("personalities", {}).get(lang, {})
 
@@ -102,10 +134,13 @@ class AIBot:
             self.current_personality = {
                 "key": personality_key,
                 "name": personality_data.get("name", personality_key),
-                "emoji": personality_data.get("emoji", "🤖"),
                 "prompt": prompt_text
             }
             self.personality_key = personality_key
+
+            # Clear all conversation memories when changing personality
+            self.memory = ConversationMemory()
+
             print(f"[INFO] Personality loaded: {self.current_personality['name']}")
             return True
 
@@ -114,18 +149,33 @@ class AIBot:
             return False
 
     def get_available_personalities(self) -> Dict[str, str]:
-        """Get available personalities for current language"""
+        """Get available personalities for current language
+
+        Returns:
+            Dictionary mapping personality keys to display names
+        """
         lang = self.config.get("language", "en")
         personalities = self.ai_config.get("personalities", {}).get(lang, {})
         return {
-            key: data.get("emoji", "🤖") + " " + data.get("name", key)
+            key: data.get("name", key)
             for key, data in personalities.items()
         }
 
     def get_server_status_context(self, server_running: bool, server_in_error: bool,
                                   last_exit_code: Optional[int], server_process,
                                   server_dir: str) -> str:
-        """Get current server status for AI context"""
+        """Get current server status for AI context
+
+        Args:
+            server_running: Whether the server is running
+            server_in_error: Whether the server is in an error state
+            last_exit_code: Last server exit code
+            server_process: Server process object
+            server_dir: Server directory path
+
+        Returns:
+            Formatted server status string
+        """
         status = "Online" if server_running else "Error" if server_in_error else "Offline"
         pid = server_process.pid if server_process and server_running else "N/A"
         exit_code = last_exit_code if last_exit_code is not None else "N/A"
@@ -133,7 +183,15 @@ class AIBot:
         return f"Server: {status} | PID: {pid} | Exit code: {exit_code}"
 
     def format_conversation_history(self, channel_id: int, include_usernames: bool = True) -> str:
-        """Format conversation history for context"""
+        """Format conversation history for context
+
+        Args:
+            channel_id: Discord channel ID
+            include_usernames: Whether to include usernames in history
+
+        Returns:
+            Formatted conversation history string
+        """
         context_config = self.ai_config.get("context", {})
         limit = context_config.get("chat_history_limit", 15)
         history = self.memory.get_history(channel_id, limit=limit)
@@ -152,7 +210,14 @@ class AIBot:
         return "\n".join(formatted)
 
     def get_server_logs_context(self, server_dir: str) -> str:
-        """Get recent server logs for context"""
+        """Get recent server logs for context
+
+        Args:
+            server_dir: Server directory path
+
+        Returns:
+            Formatted server logs string
+        """
         context_config = self.ai_config.get("context", {})
         if not context_config.get("include_server_logs", False):
             return ""
@@ -179,7 +244,20 @@ class AIBot:
                                 server_running: bool, server_in_error: bool,
                                 last_exit_code: Optional[int], server_process,
                                 server_dir: str) -> str:
-        """Generate AI response using Gemini"""
+        """Generate AI response using Gemini
+
+        Args:
+            message: Discord message that triggered the response
+            history: Message history
+            server_running: Whether the server is running
+            server_in_error: Whether the server is in an error state
+            last_exit_code: Last server exit code
+            server_process: Server process object
+            server_dir: Server directory path
+
+        Returns:
+            Generated AI response text
+        """
 
         if not self.enabled or not self.model or not self.current_personality:
             return self._get_fallback_response()
@@ -237,7 +315,11 @@ Respond naturally and briefly:"""
             return self._get_error_response("api_error")
 
     def _get_fallback_response(self) -> str:
-        """Get fallback response when AI is disabled"""
+        """Get fallback response when AI is disabled
+
+        Returns:
+            Fallback message string
+        """
         lang = self.config.get("language", "en")
 
         if lang == "pl":
@@ -246,7 +328,14 @@ Respond naturally and briefly:"""
             return "AI disabled. Use commands like `/status` or `/start`."
 
     def _get_error_response(self, error_type: str) -> str:
-        """Get error response message"""
+        """Get error response message
+
+        Args:
+            error_type: Type of error that occurred
+
+        Returns:
+            Error message string
+        """
         lang = self.config.get("language", "en")
 
         if lang == "pl":
@@ -256,7 +345,14 @@ Respond naturally and briefly:"""
 
 
 def load_ai_config(config_file: str = "ai-config.json") -> dict:
-    """Load AI configuration from file"""
+    """Load AI configuration from file
+
+    Args:
+        config_file: Path to AI configuration file
+
+    Returns:
+        AI configuration dictionary
+    """
     if not os.path.exists(config_file):
         print(f"[WARN] AI configuration file '{config_file}' not found")
         return {"enabled": False}

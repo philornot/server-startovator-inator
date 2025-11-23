@@ -13,55 +13,77 @@
     "en": {
       "depressed": {
         "name": "Depressed",
-        "emoji": "😔",
         "prompt": "file://prompts/en/depressed.txt"
       },
       "sarcastic": {
         "name": "Sarcastic",
-        "emoji": "😏",
         "prompt": "file://prompts/en/sarcastic.txt"
       },
       "cheerful": {
         "name": "Cheerful",
-        "emoji": "😊",
         "prompt": "file://prompts/en/cheerful.txt"
       },
       "grumpy": {
         "name": "Grumpy",
-        "emoji": "😤",
         "prompt": "file://prompts/en/grumpy.txt"
       },
       "professional": {
         "name": "Professional",
-        "emoji": "🤖",
         "prompt": "file://prompts/en/professional.txt"
+      },
+      "tsundere": {
+        "name": "Tsundere",
+        "prompt": "file://prompts/en/tsundere.txt"
+      },
+      "lazy": {
+        "name": "Lazy",
+        "prompt": "file://prompts/en/lazy.txt"
+      },
+      "paranoid": {
+        "name": "Paranoid",
+        "prompt": "file://prompts/en/paranoid.txt"
+      },
+      "enthusiastic": {
+        "name": "Enthusiastic",
+        "prompt": "file://prompts/en/enthusiastic.txt"
       }
     },
     "pl": {
       "depressed": {
         "name": "Smutny",
-        "emoji": "😔",
         "prompt": "file://prompts/pl/depressed.txt"
       },
       "sarcastic": {
         "name": "Sarkastyczny",
-        "emoji": "😏",
         "prompt": "file://prompts/pl/sarcastic.txt"
       },
       "cheerful": {
         "name": "Wesoły",
-        "emoji": "😊",
         "prompt": "file://prompts/pl/cheerful.txt"
       },
       "grumpy": {
         "name": "Zgorszony",
-        "emoji": "😤",
         "prompt": "file://prompts/pl/grumpy.txt"
       },
       "professional": {
         "name": "Profesjonalny",
-        "emoji": "🤖",
         "prompt": "file://prompts/pl/professional.txt"
+      },
+      "tsundere": {
+        "name": "Tsundere",
+        "prompt": "file://prompts/pl/tsundere.txt"
+      },
+      "lazy": {
+        "name": "Leniwy",
+        "prompt": "file://prompts/pl/lazy.txt"
+      },
+      "paranoid": {
+        "name": "Paranoiczny",
+        "prompt": "file://prompts/pl/paranoid.txt"
+      },
+      "enthusiastic": {
+        "name": "Entuzjastyczny",
+        "prompt": "file://prompts/pl/enthusiastic.txt"
       }
     }
   }

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
@@ -280,11 +281,11 @@ async def set_status(text: str):
             log("Bot not ready, cannot set status", "DEBUG")
             return
 
-        # Add AI personality emoji to status if enabled
+        # Add AI personality name to status if enabled
         personality_info = ""
         if ai_bot and ai_bot.enabled and ai_bot.current_personality:
-            personality_emoji = ai_bot.current_personality.get("emoji", "")
-            personality_info = f" {personality_emoji}"
+            personality_name = ai_bot.current_personality.get("name", "")
+            personality_info = f" | {personality_name}"
 
         status_map = {
             "Online": (discord.Status.online, TRANSLATIONS.get("status_online", "🟢 Server Online") + personality_info),
@@ -531,7 +532,7 @@ async def status_cmd(interaction: discord.Interaction):
     else:
         status = f"⚫ {TRANSLATIONS.get('server_offline', 'Offline')}"
 
-    pid = server_process.pid if running else "–"
+    pid = server_process.pid if running else "—"
 
     last_lines = read_last_log_lines(config["logging"]["status_log_lines"])
 
@@ -549,12 +550,12 @@ async def status_cmd(interaction: discord.Interaction):
     # Add AI personality info if enabled
     personality_info = ""
     if ai_bot and ai_bot.enabled and ai_bot.current_personality:
-        personality_info = f"\n**AI Personality:** {ai_bot.current_personality.get('emoji', '')} {ai_bot.current_personality.get('name', 'Unknown')}"
+        personality_info = f"\n**AI Personality:** {ai_bot.current_personality.get('name', 'Unknown')}"
 
     msg = (
         f"**{TRANSLATIONS['status_label']}:** {status}\n"
         f"**PID:** {pid}\n"
-        f"**{TRANSLATIONS['last_exit_code']}:** {last_exit_code if last_exit_code is not None else '–'}{personality_info}\n\n"
+        f"**{TRANSLATIONS['last_exit_code']}:** {last_exit_code if last_exit_code is not None else '—'}{personality_info}\n\n"
         f"**{TRANSLATIONS['recent_logs']}:**\n```{last_lines}```{server_log_info}"
     )
 
@@ -623,6 +624,7 @@ async def logs_cmd(interaction: discord.Interaction):
     name="personality",
     description="Change or view AI bot personality"
 )
+@app_commands.describe(personality="Select a personality")
 async def personality_cmd(interaction: discord.Interaction, personality: str = None):
     """Change AI personality"""
     if not ai_bot or not ai_bot.enabled:
@@ -645,19 +647,46 @@ async def personality_cmd(interaction: discord.Interaction, personality: str = N
 
     # Load requested personality
     if ai_bot.load_personality(personality):
-        await set_status("Online" if server_running() else "Offline")
         personality_name = ai_bot.current_personality.get("name", personality)
-        personality_emoji = ai_bot.current_personality.get("emoji", "")
         await interaction.response.send_message(
-            f"Personality changed to: {personality_emoji} **{personality_name}**"
+            f"Personality changed to: **{personality_name}**"
         )
         log(f"Personality changed to: {personality}", "INFO")
+
+        # Force status update to show new personality
+        global last_status
+        last_status = None
+        if server_in_error:
+            await set_status("Error")
+        elif server_running():
+            await set_status("Online")
+        else:
+            await set_status("Offline")
     else:
         available = ai_bot.get_available_personalities()
         available_list = ", ".join(available.keys())
         await interaction.response.send_message(
             f"Personality `{personality}` not found. Available: {available_list}"
         )
+
+
+# Create autocomplete function for personality choices
+@personality_cmd.autocomplete('personality')
+async def personality_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+) -> list[app_commands.Choice[str]]:
+    """Provide personality options for autocomplete"""
+    if not ai_bot or not ai_bot.enabled:
+        return []
+
+    available = ai_bot.get_available_personalities()
+    choices = [
+        app_commands.Choice(name=name, value=key)
+        for key, name in available.items()
+        if current.lower() in key.lower() or current.lower() in name.lower()
+    ]
+    return choices[:25]  # Discord limit
 
 
 # ===============================
