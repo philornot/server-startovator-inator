@@ -2,6 +2,7 @@
   "enabled": true,
   "model": "gemini-2.5-flash-lite",
   "default_personality": "sarcastic",
+  "current_personality": "sarcastic",
   "context": {
     "include_chat_history": true,
     "include_usernames": true,

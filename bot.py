@@ -80,6 +80,11 @@ if AI_AVAILABLE:
             ai_bot = AIBot(config, ai_config, TRANSLATIONS)
             if ai_bot.enabled:
                 print("[INFO] AI personality module loaded successfully")
+                # Load saved personality if available
+                saved_personality = ai_config.get("current_personality")
+                if saved_personality and saved_personality != ai_bot.personality_key:
+                    if ai_bot.load_personality(saved_personality):
+                        print(f"[INFO] Restored saved personality: {saved_personality}")
         else:
             print("[INFO] AI module disabled in config")
     except Exception as e:
@@ -646,7 +651,7 @@ async def personality_cmd(interaction: discord.Interaction, personality: str = N
         return await interaction.response.send_message(msg)
 
     # Load requested personality
-    if ai_bot.load_personality(personality):
+    if ai_bot.set_personality(personality):
         personality_name = ai_bot.current_personality.get("name", personality)
         await interaction.response.send_message(
             f"Personality changed to: **{personality_name}**"

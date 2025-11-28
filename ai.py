@@ -82,11 +82,13 @@ class AIBot:
         self.enabled = False
         self.memory = ConversationMemory()
         self.current_personality = {}
-        self.personality_key = "depressed"  # Default personality key
 
         # Get AI config
         self.model_name = ai_config.get("model", "gemini-2.5-flash-lite")
         self.default_personality_key = ai_config.get("default_personality", "depressed")
+
+        # Load saved personality or default
+        self.current_personality_key = ai_config.get("current_personality", self.default_personality_key)
 
         # Try to initialize Gemini
         api_key = os.getenv("GEMINI_API_KEY")
@@ -95,9 +97,9 @@ class AIBot:
                 genai.configure(api_key=api_key)
                 self.model = genai.GenerativeModel(self.model_name)
                 self.enabled = True
-                self.load_personality(self.default_personality_key)
+                self.load_personality(self.current_personality_key)
                 print(f"[INFO] Gemini AI enabled (model: {self.model_name})")
-                print(f"[INFO] Default personality: {self.personality_key}")
+                print(f"[INFO] Current personality: {self.current_personality_key}")
             except Exception as e:
                 print(f"[ERROR] Failed to initialize Gemini: {e}")
                 self.enabled = False
@@ -343,6 +345,21 @@ Respond naturally and briefly:"""
         else:
             return "AI error. Try using normal commands."
 
+    def set_personality(self, personality_key: str) -> bool:
+        """Set personality and save to config
+
+        Args:
+            personality_key: Key of the personality to load
+
+        Returns:
+            True if personality was loaded and saved successfully
+        """
+        if self.load_personality(personality_key):
+            # Update config and save
+            self.ai_config["current_personality"] = personality_key
+            return save_ai_config(self.ai_config, "ai-config.json")
+        return False
+
 
 def load_ai_config(config_file: str = "ai-config.json") -> dict:
     """Load AI configuration from file
@@ -366,3 +383,20 @@ def load_ai_config(config_file: str = "ai-config.json") -> dict:
     except Exception as e:
         print(f"[ERROR] Failed to load {config_file}: {e}")
         return {"enabled": False}
+
+
+def save_ai_config(ai_config: dict, config_file: str = "ai-config.json"):
+    """Save AI configuration to file
+
+    Args:
+        ai_config: AI configuration dictionary
+        config_file: Path to AI configuration file
+    """
+    try:
+        with open(config_file, "w", encoding="utf-8") as f:
+            json.dump(ai_config, f, indent=2, ensure_ascii=False)
+        print(f"[INFO] AI configuration saved to {config_file}")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Failed to save AI configuration: {e}")
+        return False
