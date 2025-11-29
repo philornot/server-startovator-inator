@@ -5,3 +5,4 @@
 config.json
 ai-config.json
 *.exe
+/mods_cache.json

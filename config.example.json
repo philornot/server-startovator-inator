@@ -24,7 +24,8 @@
       "cmd_kill_desc": "Force kill the Minecraft server process",
       "cmd_status_desc": "Show current server status",
       "cmd_config_desc": "Show current bot configuration",
-      "cmd_logs_desc": "Show last lines from server.log file",
+      "cmd_logs_desc": "Show last lines from server logs",
+      "cmd_mods_desc": "Show list of installed server mods",
       "already_running": "✅ Server is already running.",
       "starting": "⏳ Starting server...",
       "started": "✅ Server started successfully!",
@@ -61,8 +62,14 @@
       "server_error": "Error",
       "last_lines": "last 5 lines",
       "last_lines_30": "last 30 lines",
-      "logs_not_found": "❌ server.log file not found. Server may not have started yet.",
-      "logs_read_error": "❌ Error reading server.log"
+      "logs_not_found": "❌ Server log file not found. Server may not have started yet.",
+      "logs_read_error": "❌ Error reading server logs",
+      "mods_title": "Installed Mods",
+      "mods_disabled": "❌ Mods scanning is not enabled. Enable it in ai-config.json",
+      "no_mods": "⚫ No mods found in the server's mods directory.",
+      "last_scan": "Last scan",
+      "mods_error": "❌ Error reading mods",
+      "ai_disabled": "AI is currently disabled"
     },
     "pl": {
       "cmd_start_desc": "Uruchom serwer Minecraft",
@@ -70,7 +77,8 @@
       "cmd_kill_desc": "Wymuś zabicie procesu serwera Minecraft",
       "cmd_status_desc": "Pokaż aktualny status serwera",
       "cmd_config_desc": "Pokaż aktualną konfigurację bota",
-      "cmd_logs_desc": "Pokaż ostatnie linie z pliku server.log",
+      "cmd_logs_desc": "Pokaż ostatnie linie z logów serwera",
+      "cmd_mods_desc": "Pokaż listę zainstalowanych modów serwera",
       "already_running": "✅ Serwer już działa.",
       "starting": "⏳ Uruchamiam serwer...",
       "started": "✅ Serwer uruchomiony pomyślnie!",
@@ -107,8 +115,14 @@
       "server_error": "Błąd",
       "last_lines": "ostatnie 5 linii",
       "last_lines_30": "ostatnie 30 linii",
-      "logs_not_found": "❌ Nie znaleziono pliku server.log. Serwer mógł jeszcze nie wystartować.",
-      "logs_read_error": "❌ Błąd odczytu server.log"
+      "logs_not_found": "❌ Nie znaleziono pliku logów serwera. Serwer mógł jeszcze nie wystartować.",
+      "logs_read_error": "❌ Błąd odczytu logów serwera",
+      "mods_title": "Zainstalowane Mody",
+      "mods_disabled": "❌ Skanowanie modów nie jest włączone. Włącz je w ai-config.json",
+      "no_mods": "⚫ Nie znaleziono modów w katalogu serwera.",
+      "last_scan": "Ostatnie skanowanie",
+      "mods_error": "❌ Błąd odczytu modów",
+      "ai_disabled": "AI jest obecnie wyłączone"
     }
   }
 }

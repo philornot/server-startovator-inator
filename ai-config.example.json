@@ -8,7 +8,10 @@
     "include_usernames": true,
     "chat_history_limit": 15,
     "include_server_logs": true,
-    "server_logs_limit": 10
+    "server_logs_limit": 10,
+    "include_mods_list": true,
+    "mods_list_limit": 30,
+    "mods_cache_duration": 300
   },
   "personalities": {
     "en": {

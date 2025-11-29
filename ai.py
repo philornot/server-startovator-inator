@@ -10,11 +10,18 @@ from typing import Optional, List, Dict
 import discord
 import google.generativeai as genai
 
+from mod_scanner import ModScanner
+
 
 class ConversationMemory:
     """Simple conversation memory storage with usernames"""
 
     def __init__(self, max_messages: int = 50):
+        """Initialize conversation memory
+
+        Args:
+            max_messages: Maximum number of messages to store per channel
+        """
         self.conversations: Dict[int, List[dict]] = {}
         self.max_messages = max_messages
 
@@ -82,6 +89,7 @@ class AIBot:
         self.enabled = False
         self.memory = ConversationMemory()
         self.current_personality = {}
+        self.mod_scanner = None
 
         # Get AI config
         self.model_name = ai_config.get("model", "gemini-2.5-flash-lite")
@@ -90,12 +98,36 @@ class AIBot:
         # Load saved personality or default
         self.current_personality_key = ai_config.get("current_personality", self.default_personality_key)
 
+        # Initialize mod scanner if enabled
+        context_config = ai_config.get("context", {})
+        if context_config.get("include_mods_list", False):
+            try:
+                server_dir = config["server"]["directory"]
+                cache_duration = context_config.get("mods_cache_duration", 300)
+                self.mod_scanner = ModScanner(server_dir, cache_duration)
+                self.mod_scanner.load_cache()
+                print(f"[INFO] Mod scanner initialized (cache: {cache_duration}s)")
+            except Exception as e:
+                print(f"[WARN] Failed to initialize mod scanner: {e}")
+
         # Try to initialize Gemini
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
             try:
                 genai.configure(api_key=api_key)
-                self.model = genai.GenerativeModel(self.model_name)
+
+                # Configure generation with higher token limit
+                generation_config = {
+                    "temperature": 0.9,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "max_output_tokens": 2048,  # Increased from default
+                }
+
+                self.model = genai.GenerativeModel(
+                    self.model_name,
+                    generation_config=generation_config
+                )
                 self.enabled = True
                 self.load_personality(self.current_personality_key)
                 print(f"[INFO] Gemini AI enabled (model: {self.model_name})")
@@ -211,35 +243,75 @@ class AIBot:
 
         return "\n".join(formatted)
 
-    def get_server_logs_context(self, server_dir: str) -> str:
+    def get_server_logs_context(self, server_dir: str) -> tuple[str, bool]:
         """Get recent server logs for context
 
         Args:
             server_dir: Server directory path
 
         Returns:
-            Formatted server logs string
+            Tuple of (formatted server logs string, logs_available boolean)
         """
         context_config = self.ai_config.get("context", {})
         if not context_config.get("include_server_logs", False):
-            return ""
+            return "", False
 
-        log_file = os.path.join(server_dir, "server.log")
-        if not os.path.exists(log_file):
+        # Prefer logs/latest.log, fallback to server.log
+        candidates = [
+            os.path.join(server_dir, "logs", "latest.log"),
+            os.path.join(server_dir, "server.log"),
+        ]
+
+        for log_file in candidates:
+            if not os.path.exists(log_file):
+                continue
+
+            try:
+                limit = context_config.get("server_logs_limit", 10)
+                with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()
+                recent_logs = "".join(lines[-limit:]) if lines else ""
+
+                if recent_logs:
+                    header = " (from latest.log)" if log_file.endswith("latest.log") else ""
+                    return f"\nRecent server logs{header}:\n{recent_logs}", True
+                else:
+                    return f"\n[SERVER LOGS: Not available - {os.path.basename(log_file)} is empty]", False
+
+            except Exception as e:
+                print(f"[WARN] Failed to read server logs from {log_file}: {e}")
+                return f"\n[SERVER LOGS: Not available - error reading file: {e}]", False
+
+        return "\n[SERVER LOGS: Not available - no log files found]", False
+
+    def get_mods_context(self) -> str:
+        """Get installed mods list for context
+
+        Returns:
+            Formatted mods list string
+        """
+        context_config = self.ai_config.get("context", {})
+        if not context_config.get("include_mods_list", False) or not self.mod_scanner:
             return ""
 
         try:
-            limit = context_config.get("server_logs_limit", 10)
-            with open(log_file, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-                recent_logs = "".join(lines[-limit:]) if lines else ""
+            max_mods = context_config.get("mods_list_limit", 30)
+            mods = self.mod_scanner.scan_mods()
 
-            if recent_logs:
-                return f"\nRecent server logs:\n{recent_logs}"
-            return ""
+            if not mods:
+                return "\nInstalled mods: None"
+
+            mods_list = [f"\nInstalled mods ({len(mods)} total):"]
+            for i, mod in enumerate(mods[:max_mods]):
+                mods_list.append(f"  • {mod.name} v{mod.version}")
+
+            if len(mods) > max_mods:
+                mods_list.append(f"  ... and {len(mods) - max_mods} more")
+
+            return "\n".join(mods_list)
 
         except Exception as e:
-            print(f"[WARN] Failed to read server logs: {e}")
+            print(f"[WARN] Failed to get mods context: {e}")
             return ""
 
     async def generate_response(self, message: discord.Message, history: List[discord.Message],
@@ -279,9 +351,19 @@ class AIBot:
             conversation_history = self.format_conversation_history(channel_id, include_usernames)
 
             # Get server logs if enabled
-            server_logs = self.get_server_logs_context(server_dir)
+            server_logs, logs_available = self.get_server_logs_context(server_dir)
 
-            # Build full prompt
+            # Get mods list if enabled
+            mods_context = self.get_mods_context()
+
+            # Build full prompt with context awareness
+            context_notes = []
+            if not logs_available:
+                context_notes.append(
+                    "NOTE: Server logs are currently not available. Do NOT make up or assume log contents.")
+
+            context_note_str = "\n" + "\n".join(context_notes) if context_notes else ""
+
             system_prompt = self.current_personality.get("prompt", "")
 
             full_prompt = f"""{system_prompt}
@@ -289,11 +371,11 @@ class AIBot:
 Current server status: {server_status}
 
 Previous conversation:
-{conversation_history}{server_logs}
+{conversation_history}{server_logs}{mods_context}{context_note_str}
 
 User ({message.author.name}): {message.content}
 
-Respond naturally and briefly:"""
+Respond naturally and be thorough with your answer:"""
 
             # Generate response
             response = self.model.generate_content(full_prompt)
@@ -305,7 +387,7 @@ Respond naturally and briefly:"""
                 self.memory.add_message(channel_id, "user", message.content, message.author.name)
                 self.memory.add_message(channel_id, "assistant", response_text)
 
-                print(f"[INFO] AI response generated for {message.author.name}")
+                print(f"[INFO] AI response generated for {message.author.name} ({len(response_text)} chars)")
                 return response_text
             else:
                 return self._get_error_response("empty_response")
@@ -359,6 +441,24 @@ Respond naturally and briefly:"""
             self.ai_config["current_personality"] = personality_key
             return save_ai_config(self.ai_config, "ai-config.json")
         return False
+
+    def refresh_mods_cache(self) -> bool:
+        """Force refresh of mods cache
+
+        Returns:
+            True if refresh was successful
+        """
+        if not self.mod_scanner:
+            return False
+
+        try:
+            self.mod_scanner.scan_mods(force_refresh=True)
+            self.mod_scanner.save_cache()
+            print("[INFO] Mods cache refreshed")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to refresh mods cache: {e}")
+            return False
 
 
 def load_ai_config(config_file: str = "ai-config.json") -> dict:

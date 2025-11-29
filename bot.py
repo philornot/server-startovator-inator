@@ -526,6 +526,11 @@ async def kill_server(interaction: discord.Interaction):
     description=TRANSLATIONS["cmd_status_desc"]
 )
 async def status_cmd(interaction: discord.Interaction):
+    """Display current server status with logs
+
+    Args:
+        interaction: Discord interaction object
+    """
     global server_in_error, last_exit_code
 
     running = server_running()
@@ -541,16 +546,17 @@ async def status_cmd(interaction: discord.Interaction):
 
     last_lines = read_last_log_lines(config["logging"]["status_log_lines"])
 
-    server_log_path = os.path.join(SERVER_DIR, "server.log")
+    # Read from server's latest.log instead of server.log
+    server_log_path = os.path.join(SERVER_DIR, "logs", "latest.log")
     server_log_info = ""
     if os.path.exists(server_log_path):
         try:
-            with open(server_log_path, "r", encoding="utf-8") as f:
+            with open(server_log_path, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
                 last_5 = "".join(lines[-5:]) if lines else TRANSLATIONS["no_logs"]
-                server_log_info = f"\n\n**Server.log ({TRANSLATIONS.get('last_lines', 'last 5 lines')}):**\n```{last_5}```"
+                server_log_info = f"\n\n**Server logs - latest.log ({TRANSLATIONS.get('last_lines', 'last 5 lines')}):**\n```{last_5}```"
         except Exception as e:
-            log(f"Failed to read server.log in status command: {e}", "WARN")
+            log(f"Failed to read latest.log in status command: {e}", "WARN")
 
     # Add AI personality info if enabled
     personality_info = ""
@@ -561,7 +567,7 @@ async def status_cmd(interaction: discord.Interaction):
         f"**{TRANSLATIONS['status_label']}:** {status}\n"
         f"**PID:** {pid}\n"
         f"**{TRANSLATIONS['last_exit_code']}:** {last_exit_code if last_exit_code is not None else '—'}{personality_info}\n\n"
-        f"**{TRANSLATIONS['recent_logs']}:**\n```{last_lines}```{server_log_info}"
+        f"**{TRANSLATIONS['recent_logs']} (bot.log):**\n```{last_lines}```{server_log_info}"
     )
 
     if len(msg) > 1900:
@@ -594,31 +600,36 @@ async def config_cmd(interaction: discord.Interaction):
 # ===============================
 @bot.tree.command(
     name="logs",
-    description=TRANSLATIONS.get("cmd_logs_desc", "Show last lines from server.log file")
+    description=TRANSLATIONS.get("cmd_logs_desc", "Show last lines from bot.log file")
 )
 async def logs_cmd(interaction: discord.Interaction):
-    server_log_path = os.path.join(SERVER_DIR, "server.log")
+    """Display recent bot logs
 
-    if not os.path.exists(server_log_path):
+    Args:
+        interaction: Discord interaction object
+    """
+    bot_log_path = LOG_FILE  # bot.log in the same directory as bot.py
+
+    if not os.path.exists(bot_log_path):
         return await interaction.response.send_message(
-            TRANSLATIONS.get("logs_not_found", "❌ server.log file not found. Server may not have started yet.")
+            TRANSLATIONS.get("logs_not_found", "❌ bot.log file not found. Bot may not have started logging yet.")
         )
 
     try:
-        with open(server_log_path, "r", encoding="utf-8") as f:
+        with open(bot_log_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
             last_lines = "".join(lines[-30:]) if lines else TRANSLATIONS["no_logs"]
 
-        msg = f"**Server.log ({TRANSLATIONS.get('last_lines_30', 'last 30 lines')}):**\n```{last_lines}```"
+        msg = f"**Bot.log ({TRANSLATIONS.get('last_lines_30', 'last 30 lines')}):**\n```{last_lines}```"
 
         if len(msg) > 1900:
             msg = msg[:1900] + "\n...(truncated)```"
 
         await interaction.response.send_message(msg)
     except Exception as e:
-        log_exception(f"Error reading server.log: {e}")
+        log_exception(f"Error reading bot.log: {e}")
         await interaction.response.send_message(
-            f"{TRANSLATIONS.get('logs_read_error', '❌ Error reading server.log')}: {e}"
+            f"{TRANSLATIONS.get('logs_read_error', '❌ Error reading bot.log')}: {e}"
         )
 
 
@@ -692,6 +703,91 @@ async def personality_autocomplete(
         if current.lower() in key.lower() or current.lower() in name.lower()
     ]
     return choices[:25]  # Discord limit
+
+
+# ===============================
+#   /mods
+# ===============================
+@bot.tree.command(
+    name="mods",
+    description=TRANSLATIONS.get("cmd_mods_desc", "Show list of installed server mods")
+)
+@app_commands.describe(refresh="Force refresh the mods cache")
+async def mods_cmd(interaction: discord.Interaction, refresh: bool = False):
+    """Display list of installed mods
+
+    Args:
+        interaction: Discord interaction object
+        refresh: Whether to force refresh the cache
+    """
+    if not ai_bot or not ai_bot.mod_scanner:
+        return await interaction.response.send_message(
+            TRANSLATIONS.get("mods_disabled", "❌ Mods scanning is not enabled. Enable it in ai-config.json")
+        )
+
+    await interaction.response.defer()
+
+    try:
+        if refresh:
+            log("Refreshing mods cache...", "INFO")
+            ai_bot.mod_scanner.scan_mods(force_refresh=True)
+            ai_bot.mod_scanner.save_cache()
+
+        mods = ai_bot.mod_scanner.scan_mods()
+
+        if not mods:
+            return await interaction.followup.send(
+                TRANSLATIONS.get("no_mods", "⚫ No mods found in the server's mods directory.")
+            )
+
+        # Build response
+        response_lines = [
+            f"**{TRANSLATIONS.get('mods_title', 'Installed Mods')}** ({len(mods)} total)"
+        ]
+
+        # Show first 40 mods in detail
+        for i, mod in enumerate(mods[:40]):
+            response_lines.append(f"• **{mod.name}** `v{mod.version}`")
+
+        if len(mods) > 40:
+            response_lines.append(f"\n_...and {len(mods) - 40} more mods_")
+
+        response_text = "\n".join(response_lines)
+
+        # Add cache info
+        if ai_bot.mod_scanner.last_scan_time:
+            scan_time = ai_bot.mod_scanner.last_scan_time.strftime("%Y-%m-%d %H:%M:%S")
+            response_text += f"\n\n_{TRANSLATIONS.get('last_scan', 'Last scan')}: {scan_time}_"
+
+        # Split if too long
+        if len(response_text) > 2000:
+            # Send in chunks
+            chunks = []
+            current_chunk = response_lines[0] + "\n"
+
+            for line in response_lines[1:]:
+                if len(current_chunk) + len(line) + 1 > 1900:
+                    chunks.append(current_chunk)
+                    current_chunk = line + "\n"
+                else:
+                    current_chunk += line + "\n"
+
+            if current_chunk:
+                chunks.append(current_chunk)
+
+            await interaction.followup.send(chunks[0])
+            for chunk in chunks[1:]:
+                await interaction.channel.send(chunk)
+        else:
+            await interaction.followup.send(response_text)
+
+        log(f"Mods list sent ({len(mods)} mods)", "INFO")
+
+    except Exception as e:
+        log_exception(f"Error in mods command: {e}")
+        await interaction.followup.send(
+            f"{TRANSLATIONS.get('mods_error', '❌ Error reading mods')}: {e}"
+        )
 
 
 # ===============================
